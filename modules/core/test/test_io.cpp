@@ -1711,4 +1711,104 @@ TEST(Core_InputOutput, FileStorage_JSON_VeryLongLines)
     }
 }
 
+TEST(Core_InputOutput, FileStorage_empty_16823)
+{
+    std::string fname = tempfile("test_fs_empty.yml");
+    {
+        // create empty file
+        std::ofstream f(fname.c_str(), std::ios::out);
+    }
+
+    try
+    {
+        FileStorage fs(fname, FileStorage::READ);
+        ADD_FAILURE() << "Exception must be thrown for empty file.";
+    }
+    catch (const cv::Exception&)
+    {
+        // expected way
+        // closed files can be checked manually through 'strace'
+    }
+    catch (const std::exception& e)
+    {
+        ADD_FAILURE() << "Unexpected exception: " << e.what();
+    }
+    catch (...)
+    {
+        ADD_FAILURE() << "Unexpected unknown C++ exception";
+    }
+
+    EXPECT_EQ(0, remove(fname.c_str()));
+}
+
+TEST(Core_InputOutput, FileStorage_open_empty_16823)
+{
+    std::string fname = tempfile("test_fs_open_empty.yml");
+    {
+        // create empty file
+        std::ofstream f(fname.c_str(), std::ios::out);
+    }
+
+    FileStorage fs;
+    try
+    {
+        fs.open(fname, FileStorage::READ);
+        ADD_FAILURE() << "Exception must be thrown for empty file.";
+    }
+    catch (const cv::Exception&)
+    {
+        // expected way
+        // closed files can be checked manually through 'strace'
+    }
+    catch (const std::exception& e)
+    {
+        ADD_FAILURE() << "Unexpected exception: " << e.what();
+    }
+    catch (...)
+    {
+        ADD_FAILURE() << "Unexpected unknown C++ exception";
+    }
+
+    EXPECT_EQ(0, remove(fname.c_str()));
+}
+
+TEST(Core_InputOutput, FileStorage_copy_constructor_17412)
+{
+    std::string fname = tempfile("test.yml");
+    FileStorage fs_orig(fname, cv::FileStorage::WRITE);
+    fs_orig << "string" << "wat";
+    fs_orig.release();
+
+    // no crash anymore
+    cv::FileStorage fs;
+    fs = cv::FileStorage(fname,  cv::FileStorage::READ);
+    std::string s;
+    fs["string"] >> s;
+    EXPECT_EQ(s, "wat");
+    EXPECT_EQ(0, remove(fname.c_str()));
+}
+
+TEST(Core_InputOutput, FileStorage_copy_constructor_17412_heap)
+{
+    std::string fname = tempfile("test.yml");
+    FileStorage fs_orig(fname, cv::FileStorage::WRITE);
+    fs_orig << "string" << "wat";
+    fs_orig.release();
+
+    // no crash anymore
+    cv::FileStorage fs;
+
+    // use heap to allow valgrind detections
+    {
+    cv::FileStorage* fs2 = new cv::FileStorage(fname, cv::FileStorage::READ);
+    fs = *fs2;
+    delete fs2;
+    }
+
+    std::string s;
+    fs["string"] >> s;
+    EXPECT_EQ(s, "wat");
+    EXPECT_EQ(0, remove(fname.c_str()));
+}
+
 }} // namespace

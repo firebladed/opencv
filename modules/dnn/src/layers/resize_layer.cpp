@@ -12,7 +12,11 @@
 
 #ifdef HAVE_DNN_NGRAPH
 #include "../ie_ngraph.hpp"
+#if INF_ENGINE_VER_MAJOR_GT(INF_ENGINE_RELEASE_2020_4)
+#include <ngraph/op/interpolate.hpp>
+#else
 #include <ngraph/op/experimental/layers/interpolate.hpp>
+#endif
 #endif
 
 #ifdef HAVE_CUDA
@@ -25,8 +29,8 @@ namespace cv { namespace dnn {
 class ResizeLayerImpl : public ResizeLayer
 {
 public:
-    ResizeLayerImpl(const LayerParams& params) : zoomFactorWidth(params.get<int>("zoom_factor_x", params.get<int>("zoom_factor", 0))),
-                                                 zoomFactorHeight(params.get<int>("zoom_factor_y", params.get<int>("zoom_factor", 0))),
+    ResizeLayerImpl(const LayerParams& params) : zoomFactorWidth(params.get<float>("zoom_factor_x", params.get<float>("zoom_factor", 0))),
+                                                 zoomFactorHeight(params.get<float>("zoom_factor_y", params.get<float>("zoom_factor", 0))),
                                                  scaleWidth(0), scaleHeight(0)
     {
         setParamsFrom(params);
@@ -41,7 +45,7 @@ public:
             CV_Assert(params.has("zoom_factor_x") && params.has("zoom_factor_y"));
         }
         interpolation = params.get<String>("interpolation");
-        CV_Assert(interpolation == "nearest" || interpolation == "bilinear");
+        CV_Check(interpolation, interpolation == "nearest" || interpolation == "opencv_linear" || interpolation == "bilinear", "");
 
         alignCorners = params.get<bool>("align_corners", false);
     }
@@ -51,10 +55,15 @@ public:
                          std::vector<MatShape> &outputs,
                          std::vector<MatShape> &internals) const CV_OVERRIDE
     {
-        CV_Assert_N(inputs.size() == 1, inputs[0].size() == 4);
+        CV_Assert_N(inputs.size() == 1 || inputs.size() == 2, inputs[0].size() == 4);
         outputs.resize(1, inputs[0]);
-        outputs[0][2] = zoomFactorHeight > 0 ? (outputs[0][2] * zoomFactorHeight) : outHeight;
-        outputs[0][3] = zoomFactorWidth > 0 ? (outputs[0][3] * zoomFactorWidth) : outWidth;
+        if (inputs.size() == 1) {
+            outputs[0][2] = zoomFactorHeight > 0 ? (outputs[0][2] * zoomFactorHeight) : outHeight;
+            outputs[0][3] = zoomFactorWidth > 0 ? (outputs[0][3] * zoomFactorWidth) : outWidth;
+        } else {
+            outputs[0][2] = inputs[1][2];
+            outputs[0][3] = inputs[1][3];
+        }
         // We can work in-place (do nothing) if input shape == output shape.
         return (outputs[0][2] == inputs[0][2]) && (outputs[0][3] == inputs[0][3]);
     }
@@ -65,8 +74,7 @@ public:
             return interpolation == "nearest" || interpolation == "bilinear";
 
 #ifdef HAVE_INF_ENGINE
-        if (backendId == DNN_BACKEND_INFERENCE_ENGINE_NN_BUILDER_2019 ||
-            backendId == DNN_BACKEND_INFERENCE_ENGINE_NGRAPH)
+        if (backendId == DNN_BACKEND_INFERENCE_ENGINE_NN_BUILDER_2019 || backendId == DNN_BACKEND_INFERENCE_ENGINE_NGRAPH)
         {
             return (interpolation == "nearest" && scaleWidth == scaleHeight) ||
                    (interpolation == "bilinear");
@@ -115,14 +123,15 @@ public:
 
         Mat& inp = inputs[0];
         Mat& out = outputs[0];
-        if (interpolation == "nearest")
+        if (interpolation == "nearest" || interpolation == "opencv_linear")
         {
+            InterpolationFlags mode = interpolation == "nearest" ? INTER_NEAREST : INTER_LINEAR;
             for (size_t n = 0; n < inputs[0].size[0]; ++n)
             {
                 for (size_t ch = 0; ch < inputs[0].size[1]; ++ch)
                 {
                     resize(getPlane(inp, n, ch), getPlane(out, n, ch),
-                           Size(outWidth, outHeight), 0, 0, INTER_NEAREST);
+                           Size(outWidth, outHeight), 0, 0, mode);
                 }
             }
         }
@@ -170,30 +179,10 @@ public:
             CV_Error(Error::StsNotImplemented, "Unknown interpolation: " + interpolation);
     }
 
-#ifdef HAVE_CUDA
-    Ptr<BackendNode> initCUDA(
-        void *context_,
-        const std::vector<Ptr<BackendWrapper>>& inputs,
-        const std::vector<Ptr<BackendWrapper>>& outputs
-    ) override
-    {
-        auto context = reinterpret_cast<csl::CSLContext*>(context_);
 
-        cuda4dnn::InterpolationType itype;
-        if (interpolation == "nearest")
-            itype = InterpolationType::NEAREST_NEIGHBOUR;
-        else if (interpolation == "bilinear")
-            itype = InterpolationType::BILINEAR;
-        else
-            CV_Error(Error::StsNotImplemented, "Requested interpolation mode is not available in resize layer.");
-
-        return make_cuda_node<cuda4dnn::ResizeOp>(preferableTarget, std::move(context->stream), itype, scaleHeight, scaleWidth);
-    }
-#endif
-
+#ifdef HAVE_DNN_IE_NN_BUILDER_2019
     virtual Ptr<BackendNode> initInfEngine(const std::vector<Ptr<BackendWrapper> >&) CV_OVERRIDE
     {
-#ifdef HAVE_INF_ENGINE
         InferenceEngine::Builder::Layer ieLayer(name);
         ieLayer.setName(name);
         if (interpolation == "nearest")
@@ -219,9 +208,8 @@ public:
         ieLayer.setInputPorts(std::vector<InferenceEngine::Port>(1));
         ieLayer.setOutputPorts(std::vector<InferenceEngine::Port>(1));
         return Ptr<BackendNode>(new InfEngineBackendNode(ieLayer));
-#endif  // HAVE_INF_ENGINE
-        return Ptr<BackendNode>();
     }
+#endif  // HAVE_DNN_IE_NN_BUILDER_2019
 
 
 #ifdef HAVE_DNN_NGRAPH
@@ -252,9 +240,32 @@ public:
     }
 #endif  // HAVE_DNN_NGRAPH
 
+
+#ifdef HAVE_CUDA
+    Ptr<BackendNode> initCUDA(
+        void *context_,
+        const std::vector<Ptr<BackendWrapper>>& inputs,
+        const std::vector<Ptr<BackendWrapper>>& outputs
+    ) override
+    {
+        auto context = reinterpret_cast<csl::CSLContext*>(context_);
+
+        cuda4dnn::InterpolationType itype;
+        if (interpolation == "nearest")
+            itype = InterpolationType::NEAREST_NEIGHBOUR;
+        else if (interpolation == "bilinear")
+            itype = InterpolationType::BILINEAR;
+        else
+            CV_Error(Error::StsNotImplemented, "Requested interpolation mode is not available in resize layer.");
+
+        return make_cuda_node<cuda4dnn::ResizeOp>(preferableTarget, std::move(context->stream), itype, scaleHeight, scaleWidth);
+    }
+#endif
+
+
 protected:
     int outWidth, outHeight;
-    const int zoomFactorWidth, zoomFactorHeight;
+    const float zoomFactorWidth, zoomFactorHeight;
     String interpolation;
     float scaleWidth, scaleHeight;
     bool alignCorners;

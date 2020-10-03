@@ -81,12 +81,12 @@ TEST(GAPI_Pipeline, OverloadUnary_MatMat)
 
     cv::Mat out_mat;
     comp.apply(in_mat, out_mat);
-    EXPECT_EQ(0, cv::countNonZero(out_mat != ref_mat));
+    EXPECT_EQ(0, cvtest::norm(out_mat, ref_mat, NORM_INF));
 
     out_mat = cv::Mat();
     auto cc = comp.compile(cv::descr_of(in_mat));
     cc(in_mat, out_mat);
-    EXPECT_EQ(0, cv::countNonZero(out_mat != ref_mat));
+    EXPECT_EQ(0, cvtest::norm(out_mat, ref_mat, NORM_INF));
 }
 
 TEST(GAPI_Pipeline, OverloadUnary_MatScalar)
@@ -117,12 +117,12 @@ TEST(GAPI_Pipeline, OverloadBinary_Mat)
 
     cv::Mat out_mat;
     comp.apply(in_mat, in_mat, out_mat);
-    EXPECT_EQ(0, cv::countNonZero(out_mat != ref_mat));
+    EXPECT_EQ(0, cvtest::norm(out_mat, ref_mat, NORM_INF));
 
     out_mat = cv::Mat();
     auto cc = comp.compile(cv::descr_of(in_mat), cv::descr_of(in_mat));
     cc(in_mat, in_mat, out_mat);
-    EXPECT_EQ(0, cv::countNonZero(out_mat != ref_mat));
+    EXPECT_EQ(0, cvtest::norm(out_mat, ref_mat, NORM_INF));
 }
 
 TEST(GAPI_Pipeline, OverloadBinary_Scalar)
@@ -193,9 +193,9 @@ TEST(GAPI_Pipeline, Sharpen)
         cv::Mat diff = out_mat_ocv != out_mat;
         std::vector<cv::Mat> diffBGR(3);
         cv::split(diff, diffBGR);
-        EXPECT_EQ(0, cv::countNonZero(diffBGR[0]));
-        EXPECT_EQ(0, cv::countNonZero(diffBGR[1]));
-        EXPECT_EQ(0, cv::countNonZero(diffBGR[2]));
+        EXPECT_EQ(0, cvtest::norm(diffBGR[0], NORM_INF));
+        EXPECT_EQ(0, cvtest::norm(diffBGR[1], NORM_INF));
+        EXPECT_EQ(0, cvtest::norm(diffBGR[2], NORM_INF));
     }
 
     // Metadata check /////////////////////////////////////////////////////////
@@ -283,9 +283,9 @@ TEST(GAPI_Pipeline, CustomRGB2YUV)
             diff_u = diff(out_mats_cv[1], out_mats_gapi[1], 2),
             diff_v = diff(out_mats_cv[2], out_mats_gapi[2], 2);
 
-        EXPECT_EQ(0, cv::countNonZero(diff_y));
-        EXPECT_EQ(0, cv::countNonZero(diff_u));
-        EXPECT_EQ(0, cv::countNonZero(diff_v));
+        EXPECT_EQ(0, cvtest::norm(diff_y, NORM_INF));
+        EXPECT_EQ(0, cvtest::norm(diff_u, NORM_INF));
+        EXPECT_EQ(0, cvtest::norm(diff_v, NORM_INF));
     }
 }
 
@@ -325,21 +325,6 @@ TEST(GAPI_Pipeline, PipelineAllocatingKernel)
     cv::GComputation comp(cv::GIn(in), cv::GOut(out));
 
     EXPECT_THROW(comp.apply(in_mat, out_mat, cv::compile_args(pkg)), std::logic_error);
-}
-
-TEST(GAPI_Pipeline, CanUseOwnMatAsOutput)
-{
-    cv::GMat in;
-    cv::GComputation comp(in, cv::gapi::bitwise_not(in));
-
-    cv::Mat in_mat(3, 3, CV_8UC1);
-    cv::Mat out_mat(3, 3, CV_8UC1);
-
-    cv::gapi::own::Mat in_own_mat(in_mat.rows, in_mat.cols, CV_8UC1, in_mat.data);
-    cv::gapi::own::Mat out_own_mat(out_mat.rows, out_mat.cols, CV_8UC1, out_mat.data);
-
-    // FIXME add overload for apply(cv::gapi::own::Mat in, cv::gapi::own::Mat& out)
-    EXPECT_NO_THROW(comp.apply({in_own_mat}, {out_own_mat}));
 }
 
 TEST(GAPI_Pipeline, CreateKernelImplFromLambda)

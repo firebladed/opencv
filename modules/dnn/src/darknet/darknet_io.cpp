@@ -149,7 +149,7 @@ namespace cv {
 
 
                 void setConvolution(int kernel, int pad, int stride,
-                    int filters_num, int channels_num, int use_batch_normalize)
+                    int filters_num, int channels_num, int groups, int use_batch_normalize)
                 {
                     cv::dnn::LayerParams conv_param =
                         getParamConvolution(kernel, pad, stride, filters_num);
@@ -161,6 +161,8 @@ namespace cv {
                     if (!use_batch_normalize) {
                         conv_param.set<bool>("bias_term", true);
                     }
+
+                    conv_param.set<int>("group", groups);
 
                     lp.layer_name = layer_name;
                     lp.layer_type = conv_param.type;
@@ -215,15 +217,38 @@ namespace cv {
                     fused_layer_names.push_back(last_layer);
                 }
 
-                void setReLU()
+                void setActivation(String type)
                 {
                     cv::dnn::LayerParams activation_param;
-                    activation_param.set<float>("negative_slope", 0.1f);
-                    activation_param.name = "ReLU-name";
-                    activation_param.type = "ReLU";
+                    if (type == "relu")
+                    {
+                        activation_param.type = "ReLU";
+                    }
+                    else if (type == "leaky")
+                    {
+                        activation_param.set<float>("negative_slope", 0.1f);
+                        activation_param.type = "ReLU";
+                    }
+                    else if (type == "swish")
+                    {
+                        activation_param.type = "Swish";
+                    }
+                    else if (type == "mish")
+                    {
+                        activation_param.type = "Mish";
+                    }
+                    else if (type == "logistic")
+                    {
+                        activation_param.type = "Sigmoid";
+                    }
+                    else
+                    {
+                        CV_Error(cv::Error::StsParseError, "Unsupported activation: " + type);
+                    }
+
+                    std::string layer_name = cv::format("%s_%d", type.c_str(), layer_id);
 
                     darknet::LayerParameter lp;
-                    std::string layer_name = cv::format("relu_%d", layer_id);
                     lp.layer_name = layer_name;
                     lp.layer_type = activation_param.type;
                     lp.layerParams = activation_param;
@@ -342,6 +367,28 @@ namespace cv {
                     fused_layer_names.push_back(last_layer);
                 }
 
+                void setSlice(int input_index, int split_size, int group_id)
+                {
+                    int begin[] = {0, split_size * group_id, 0, 0};
+                    cv::dnn::DictValue paramBegin = cv::dnn::DictValue::arrayInt(begin, 4);
+
+                    int end[] = {-1, begin[1] + split_size, -1, -1};
+                    cv::dnn::DictValue paramEnd = cv::dnn::DictValue::arrayInt(end, 4);
+
+                    darknet::LayerParameter lp;
+                    lp.layer_name = cv::format("slice_%d", layer_id);
+                    lp.layer_type = "Slice";
+                    lp.layerParams.set("begin", paramBegin);
+                    lp.layerParams.set("end", paramEnd);
+
+                    lp.bottom_indexes.push_back(fused_layer_names.at(input_index));
+                    net->layers.push_back(lp);
+
+                    layer_id++;
+                    last_layer = lp.layer_name;
+                    fused_layer_names.push_back(last_layer);
+                }
+
                 void setReorg(int stride)
                 {
                     cv::dnn::LayerParams reorg_params;
@@ -419,7 +466,7 @@ namespace cv {
                     fused_layer_names.push_back(last_layer);
                 }
 
-                void setYolo(int classes, const std::vector<int>& mask, const std::vector<float>& anchors, float thresh, float nms_threshold)
+                void setYolo(int classes, const std::vector<int>& mask, const std::vector<float>& anchors, float thresh, float nms_threshold, float scale_x_y)
                 {
                     cv::dnn::LayerParams region_param;
                     region_param.name = "Region-name";
@@ -432,6 +479,7 @@ namespace cv {
                     region_param.set<bool>("logistic", true);
                     region_param.set<float>("thresh", thresh);
                     region_param.set<float>("nms_threshold", nms_threshold);
+                    region_param.set<float>("scale_x_y", scale_x_y);
 
                     std::vector<float> usedAnchors(numAnchors * 2);
                     for (int i = 0; i < numAnchors; ++i)
@@ -480,6 +528,25 @@ namespace cv {
                     lp.layerParams = shortcut_param;
                     lp.bottom_indexes.push_back(last_layer);
                     lp.bottom_indexes.push_back(fused_layer_names.at(from));
+                    last_layer = layer_name;
+                    net->layers.push_back(lp);
+
+                    layer_id++;
+                    fused_layer_names.push_back(last_layer);
+                }
+
+                void setScaleChannels(int from)
+                {
+                    cv::dnn::LayerParams shortcut_param;
+                    shortcut_param.type = "Scale";
+
+                    darknet::LayerParameter lp;
+                    std::string layer_name = cv::format("scale_channels_%d", layer_id);
+                    lp.layer_name = layer_name;
+                    lp.layer_type = shortcut_param.type;
+                    lp.layerParams = shortcut_param;
+                    lp.bottom_indexes.push_back(fused_layer_names.at(from));
+                    lp.bottom_indexes.push_back(last_layer);
                     last_layer = layer_name;
                     net->layers.push_back(lp);
 
@@ -556,7 +623,7 @@ namespace cv {
                             const size_t layer_type_size = line.find("]") - 1;
                             CV_Assert(layer_type_size < line.size());
                             std::string layer_type = line.substr(1, layer_type_size);
-                            net->layers_cfg[layers_counter]["type"] = layer_type;
+                            net->layers_cfg[layers_counter]["layer_type"] = layer_type;
                         }
                         break;
                     default:
@@ -599,7 +666,7 @@ namespace cv {
                 for (it_type i = net->layers_cfg.begin(); i != net->layers_cfg.end(); ++i) {
                     ++layers_counter;
                     std::map<std::string, std::string> &layer_params = i->second;
-                    std::string layer_type = layer_params["type"];
+                    std::string layer_type = layer_params["layer_type"];
 
                     if (layer_type == "convolutional")
                     {
@@ -608,6 +675,7 @@ namespace cv {
                         int padding = getParam<int>(layer_params, "padding", 0);
                         int stride = getParam<int>(layer_params, "stride", 1);
                         int filters = getParam<int>(layer_params, "filters", -1);
+                        int groups = getParam<int>(layer_params, "groups", 1);
                         bool batch_normalize = getParam<int>(layer_params, "batch_normalize", 0) == 1;
                         int flipped = getParam<int>(layer_params, "flipped", 0);
                         if (flipped == 1)
@@ -616,11 +684,14 @@ namespace cv {
                         if (pad)
                             padding = kernel_size / 2;
 
+                        // Cannot divide 0
+                        CV_Assert(stride > 0);
                         CV_Assert(kernel_size > 0 && filters > 0);
                         CV_Assert(tensor_shape[0] > 0);
+                        CV_Assert(tensor_shape[0] % groups == 0);
 
                         setParams.setConvolution(kernel_size, padding, stride, filters, tensor_shape[0],
-                            batch_normalize);
+                            groups, batch_normalize);
 
                         tensor_shape[0] = filters;
                         tensor_shape[1] = (tensor_shape[1] - kernel_size + 2 * padding) / stride + 1;
@@ -647,6 +718,9 @@ namespace cv {
                         int kernel_size = getParam<int>(layer_params, "size", 2);
                         int stride = getParam<int>(layer_params, "stride", 2);
                         int padding = getParam<int>(layer_params, "padding", kernel_size - 1);
+                        // Cannot divide 0
+                        CV_Assert(stride > 0);
+
                         setParams.setMaxpool(kernel_size, padding, stride);
 
                         tensor_shape[1] = (tensor_shape[1] - kernel_size + padding) / stride + 1;
@@ -669,6 +743,7 @@ namespace cv {
                     {
                         std::string bottom_layers = getParam<std::string>(layer_params, "layers", "");
                         CV_Assert(!bottom_layers.empty());
+                        int groups = getParam<int>(layer_params, "groups", 1);
                         std::vector<int> layers_vec = getNumbers<int>(bottom_layers);
 
                         tensor_shape[0] = 0;
@@ -677,18 +752,41 @@ namespace cv {
                             tensor_shape[0] += net->out_channels_vec[layers_vec[k]];
                         }
 
-                        if (layers_vec.size() == 1)
-                            setParams.setIdentity(layers_vec.at(0));
+                        if (groups > 1)
+                        {
+                            int group_id = getParam<int>(layer_params, "group_id", 0);
+                            tensor_shape[0] /= groups;
+                            int split_size = tensor_shape[0] / layers_vec.size();
+                            for (size_t k = 0; k < layers_vec.size(); ++k)
+                                setParams.setSlice(layers_vec[k], split_size, group_id);
+
+                            if (layers_vec.size() > 1)
+                            {
+                                // layer ids in layers_vec - inputs of Slice layers
+                                // after adding offset to layers_vec: layer ids - ouputs of Slice layers
+                                for (size_t k = 0; k < layers_vec.size(); ++k)
+                                    layers_vec[k] += layers_vec.size();
+
+                                setParams.setConcat(layers_vec.size(), layers_vec.data());
+                            }
+                        }
                         else
-                            setParams.setConcat(layers_vec.size(), layers_vec.data());
+                        {
+                            if (layers_vec.size() == 1)
+                                setParams.setIdentity(layers_vec.at(0));
+                            else
+                                setParams.setConcat(layers_vec.size(), layers_vec.data());
+                        }
                     }
-                    else if (layer_type == "dropout")
+                    else if (layer_type == "dropout" || layer_type == "cost")
                     {
                         setParams.setIdentity(layers_counter-1);
                     }
                     else if (layer_type == "reorg")
                     {
                         int stride = getParam<int>(layer_params, "stride", 2);
+                        // Cannot divide 0
+                        CV_Assert(stride > 0);
                         tensor_shape[0] = tensor_shape[0] * (stride * stride);
                         tensor_shape[1] = tensor_shape[1] / stride;
                         tensor_shape[2] = tensor_shape[2] / stride;
@@ -727,6 +825,14 @@ namespace cv {
                         from = from < 0 ? from + layers_counter : from;
                         setParams.setShortcut(from, alpha);
                     }
+                    else if (layer_type == "scale_channels")
+                    {
+                        std::string bottom_layer = getParam<std::string>(layer_params, "from", "");
+                        CV_Assert(!bottom_layer.empty());
+                        int from = std::atoi(bottom_layer.c_str());
+                        from = from < 0 ? from + layers_counter : from;
+                        setParams.setScaleChannels(from);
+                    }
                     else if (layer_type == "upsample")
                     {
                         int scaleFactor = getParam<int>(layer_params, "stride", 1);
@@ -739,7 +845,8 @@ namespace cv {
                         int classes = getParam<int>(layer_params, "classes", -1);
                         int num_of_anchors = getParam<int>(layer_params, "num", -1);
                         float thresh = getParam<float>(layer_params, "thresh", 0.2);
-                        float nms_threshold = getParam<float>(layer_params, "nms_threshold", 0.4);
+                        float nms_threshold = getParam<float>(layer_params, "nms_threshold", 0.0);
+                        float scale_x_y = getParam<float>(layer_params, "scale_x_y", 1.0);
 
                         std::string anchors_values = getParam<std::string>(layer_params, "anchors", std::string());
                         CV_Assert(!anchors_values.empty());
@@ -752,19 +859,15 @@ namespace cv {
                         CV_Assert(classes > 0 && num_of_anchors > 0 && (num_of_anchors * 2) == anchors_vec.size());
 
                         setParams.setPermute(false);
-                        setParams.setYolo(classes, mask_vec, anchors_vec, thresh, nms_threshold);
+                        setParams.setYolo(classes, mask_vec, anchors_vec, thresh, nms_threshold, scale_x_y);
                     }
                     else {
                         CV_Error(cv::Error::StsParseError, "Unknown layer type: " + layer_type);
                     }
 
                     std::string activation = getParam<std::string>(layer_params, "activation", "linear");
-                    if (activation == "leaky")
-                    {
-                        setParams.setReLU();
-                    }
-                    else if (activation != "linear")
-                        CV_Error(cv::Error::StsParseError, "Unsupported activation: " + activation);
+                    if (activation != "linear")
+                        setParams.setActivation(activation);
 
                     net->out_channels_vec[layers_counter] = tensor_shape[0];
                 }
@@ -806,7 +909,7 @@ namespace cv {
                     ++darknet_layers_counter;
                     ++cv_layers_counter;
                     std::map<std::string, std::string> &layer_params = i->second;
-                    std::string layer_type = layer_params["type"];
+                    std::string layer_type = layer_params["layer_type"];
 
                     if (layer_type == "convolutional" || layer_type == "connected")
                     {
@@ -818,13 +921,15 @@ namespace cv {
                         {
                             int kernel_size = getParam<int>(layer_params, "size", -1);
                             filters = getParam<int>(layer_params, "filters", -1);
+                            int groups = getParam<int>(layer_params, "groups", 1);
                             use_batch_normalize = getParam<int>(layer_params, "batch_normalize", 0) == 1;
 
                             CV_Assert(kernel_size > 0 && filters > 0);
                             CV_Assert(tensor_shape[0] > 0);
+                            CV_Assert(tensor_shape[0] % groups == 0);
 
-                            weights_size = filters * tensor_shape[0] * kernel_size * kernel_size;
-                            int sizes_weights[] = { filters, tensor_shape[0], kernel_size, kernel_size };
+                            weights_size = filters * (tensor_shape[0] / groups) * kernel_size * kernel_size;
+                            int sizes_weights[] = { filters, tensor_shape[0] / groups, kernel_size, kernel_size };
                             weightsBlob.create(4, sizes_weights, CV_32F);
                         }
                         else
@@ -879,8 +984,8 @@ namespace cv {
                     }
 
                     std::string activation = getParam<std::string>(layer_params, "activation", "linear");
-                    if(activation == "leaky")
-                        ++cv_layers_counter;  // For ReLU
+                    if (activation != "linear")
+                        ++cv_layers_counter;  // For ReLU, Swish, Mish, Sigmoid, etc
 
                     if(!darknet_layers_counter)
                         tensor_shape.resize(1);

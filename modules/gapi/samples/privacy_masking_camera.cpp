@@ -21,7 +21,7 @@ const std::string keys =
     "{ input  |                                                  | Path to the input video file }"
     "{ platm  | vehicle-license-plate-detection-barrier-0106.xml | Path to OpenVINO IE vehicle/plate detection model (.xml) }"
     "{ platd  | CPU                                              | Target device for vehicle/plate detection model (e.g. CPU, GPU, VPU, ...) }"
-    "{ facem  | face-detection-adas-0001.xml                     | Path to OpenVINO IE face detection model (.xml) }"
+    "{ facem  | face-detection-retail-0005.xml                   | Path to OpenVINO IE face detection model (.xml) }"
     "{ faced  | CPU                                              | Target device for face detection model (e.g. CPU, GPU, VPU, ...) }"
     "{ trad   | false                                            | Run processing in a traditional (non-pipelined) way }"
     "{ noshow | false                                            | Don't display UI (improves performance) }";
@@ -35,7 +35,7 @@ std::string weights_path(const std::string &model_path) {
 
     auto ext = model_path.substr(sz - EXT_LEN);
 
-    std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c){ return std::tolower(c); });
+    std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c){ return static_cast<unsigned char>(std::tolower(c)); });
     CV_Assert(ext == ".xml");
 
     return model_path.substr(0u, sz - EXT_LEN) + ".bin";
