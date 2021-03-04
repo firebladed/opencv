@@ -27,7 +27,7 @@ public:
     explicit MediaFrame(AdapterPtr &&);
     template<class T, class... Args> static cv::MediaFrame Create(Args&&...);
 
-    View access(Access);
+    View access(Access) const;
     cv::GFrameDesc desc() const;
 
 private:
@@ -51,6 +51,7 @@ public:
     View(Ptrs&& ptrs, Strides&& strs, Callback &&cb = [](){});
     View(const View&) = delete;
     View(View&&) = default;
+    View& operator = (const View&) = delete;
     ~View();
 
     Ptrs    ptr;

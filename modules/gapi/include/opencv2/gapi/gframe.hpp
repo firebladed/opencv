@@ -42,7 +42,7 @@ private:
 };
 /** @} */
 
-enum class MediaFormat
+enum class MediaFormat: int
 {
     BGR = 0,
     NV12,
@@ -56,9 +56,14 @@ struct GAPI_EXPORTS GFrameDesc
 {
     MediaFormat fmt;
     cv::Size size;
+
+    bool operator== (const GFrameDesc &) const;
 };
 static inline GFrameDesc empty_gframe_desc() { return GFrameDesc{}; }
 /** @} */
+
+class MediaFrame;
+GAPI_EXPORTS GFrameDesc descr_of(const MediaFrame &frame);
 
 GAPI_EXPORTS std::ostream& operator<<(std::ostream& os, const cv::GFrameDesc &desc);
 

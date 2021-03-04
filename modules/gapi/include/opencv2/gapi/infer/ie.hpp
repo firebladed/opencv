@@ -11,12 +11,14 @@
 #include <string>
 #include <array>
 #include <tuple> // tuple, tuple_size
+#include <map>
 
 #include <opencv2/gapi/opencv_includes.hpp>
 #include <opencv2/gapi/util/any.hpp>
 
 #include <opencv2/core/cvdef.h>     // GAPI_EXPORTS
 #include <opencv2/gapi/gkernel.hpp> // GKernelPackage
+#include <opencv2/gapi/infer.hpp>   // Generic
 
 namespace cv {
 namespace gapi {
@@ -41,6 +43,8 @@ enum class TraitAs: int
     IMAGE   //!< G-API traits an associated cv::Mat as an image so creates an "image" blob (NCHW/NHWC, etc)
 };
 
+using IEConfig = std::map<std::string, std::string>;
+
 namespace detail {
     struct ParamDesc {
         std::string model_path;
@@ -58,6 +62,14 @@ namespace detail {
         // (e.g. topology's partial execution)
         std::size_t num_in;  // How many inputs are defined in the operation
         std::size_t num_out; // How many outputs are defined in the operation
+
+        enum class Kind { Load, Import };
+        Kind kind;
+        bool is_generic;
+        IEConfig config;
+
+        // NB: Number of asyncrhonious infer requests
+        size_t nireq;
     };
 } // namespace detail
 
@@ -80,7 +92,21 @@ public:
         : desc{ model, weights, device, {}, {}, {}
               , std::tuple_size<typename Net::InArgs>::value  // num_in
               , std::tuple_size<typename Net::OutArgs>::value // num_out
-              } {
+              , detail::ParamDesc::Kind::Load
+              , false
+              , {}
+              , 1u} {
+    };
+
+    Params(const std::string &model,
+           const std::string &device)
+        : desc{ model, {}, device, {}, {}, {}
+              , std::tuple_size<typename Net::InArgs>::value  // num_in
+              , std::tuple_size<typename Net::OutArgs>::value // num_out
+              , detail::ParamDesc::Kind::Import
+              , false
+              , {}
+              , 1u} {
     };
 
     Params<Net>& cfgInputLayers(const typename PortCfg<Net>::In &ll) {
@@ -106,18 +132,71 @@ public:
         return *this;
     }
 
+    Params& pluginConfig(IEConfig&& cfg) {
+        desc.config = std::move(cfg);
+        return *this;
+    }
+
+    Params& pluginConfig(const IEConfig& cfg) {
+        desc.config = cfg;
+        return *this;
+    }
+
+    Params& cfgNumRequests(size_t nireq) {
+        GAPI_Assert(nireq > 0 && "Number of infer requests must be greater than zero!");
+        desc.nireq = nireq;
+        return *this;
+    }
+
     // BEGIN(G-API's network parametrization API)
-    GBackend      backend() const { return cv::gapi::ie::backend();  }
-    std::string   tag()     const { return Net::tag(); }
-    cv::util::any params()  const { return { desc }; }
+    GBackend      backend()    const { return cv::gapi::ie::backend();  }
+    std::string   tag()        const { return Net::tag(); }
+    cv::util::any params()     const { return { desc }; }
     // END(G-API's network parametrization API)
 
 protected:
     detail::ParamDesc desc;
 };
 
+template<>
+class Params<cv::gapi::Generic> {
+public:
+    Params(const std::string &tag,
+           const std::string &model,
+           const std::string &weights,
+           const std::string &device)
+        : desc{ model, weights, device, {}, {}, {}, 0u, 0u, detail::ParamDesc::Kind::Load, true, {}, 1u}, m_tag(tag) {
+    };
+
+    Params(const std::string &tag,
+           const std::string &model,
+           const std::string &device)
+        : desc{ model, {}, device, {}, {}, {}, 0u, 0u, detail::ParamDesc::Kind::Import, true, {}, 1u}, m_tag(tag) {
+    };
+
+    Params& pluginConfig(IEConfig&& cfg) {
+        desc.config = std::move(cfg);
+        return *this;
+    }
+
+    Params& pluginConfig(const IEConfig& cfg) {
+        desc.config = cfg;
+        return *this;
+    }
+
+    // BEGIN(G-API's network parametrization API)
+    GBackend      backend()    const { return cv::gapi::ie::backend();  }
+    std::string   tag()        const { return m_tag; }
+    cv::util::any params()     const { return { desc }; }
+    // END(G-API's network parametrization API)
+
+protected:
+    detail::ParamDesc desc;
+    std::string m_tag;
+};
+
 } // namespace ie
 } // namespace gapi
 } // namespace cv
 
-#endif // OPENCV_GAPI_INFER_HPP
+#endif // OPENCV_GAPI_INFER_IE_HPP
